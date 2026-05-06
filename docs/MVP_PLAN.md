@@ -49,13 +49,13 @@
 
 ### Phase 1：基础（可并行 ≥3 个 agent 同时干）
 
-| ID | 任务 | Files | DoD | Owner | 估算 LOC |
+| ID | 任务 | Files | DoD | Owner | 状态 |
 |---|---|---|---|---|---|
-| ~~**M1**~~ | ~~应用 schema 到本地 DB~~ | `backend/scripts/init_db.sh` | ✅ 11 表 + 1 视图建好 | claude | 20 |
-| ~~**M2**~~ | ~~症状字典 seed~~ | `backend/app/rules/seed_dictionary.py` + `tests/test_dictionary_rules_alignment.py` | ✅ 12 条 / 幂等 / 与 rules.yaml 一致性测试 | claude | 50 |
-| **M3** | 规则引擎 `_matches()` 实现 | `backend/app/services/rule_engine.py` | 支持 `all_of` / `any_of` / `always` 求值；支持 `numeric_value` 操作符（`gte/lte/lt/gt/eq`/`in`）和 `ctcae_grade`、`categorical_value`、`context.days_since_chemo` 字段 | TBD | 80 |
-| **M4** | 规则引擎单元测试 | `backend/tests/test_rule_engine.py` | 覆盖：R001 命中（高烧+化疗后）、R020 命中（轻度恶心）、R999 兜底、Plan D 多规则同时命中 | TBD | 100 |
-| **M5** | LLM extractor 实现 | `backend/app/services/llm_extractor.py` | 给定描述能返回合法 ParsedSymptoms；超时/JSON 解析失败抛 `LLMExtractionError` | TBD | 80 |
+| ~~**M1**~~ | ~~应用 schema 到本地 DB~~ | `backend/scripts/init_db.sh` | 11 表 + 1 视图建好 | claude | ✅ |
+| ~~**M2**~~ | ~~症状字典 seed~~ | `backend/app/rules/seed_dictionary.py` + alignment test | 12 条 / 幂等 / 与 rules.yaml 一致 | claude | ✅ |
+| **M3+M4** | 决策层（规则引擎 + CompletenessChecker + 测试）| `services/rule_engine.py` + `services/completeness_checker.py` + 2 个测试文件 | 见任务卡 v2 | TBD（重派）| 🔄 |
+| **M5** | LLM extractor 实现 | `backend/app/services/llm_extractor.py` + tests | 给定描述能返回合法 ParsedSymptoms；超时/JSON 解析失败抛 `LLMExtractionError` | agent | ✅ feat 分支待 merge |
+| **M_smoke** | 真实患者语料冒烟集（18+ cases）| `tests/smoke_cases.yaml` + `test_smoke_corpus.py` | 见任务卡 | TBD | 📋 |
 
 **Phase 1 验收**：
 ```bash
@@ -70,12 +70,12 @@ python -c "from app.services.llm_extractor import LLMExtractor; print(LLMExtract
 
 ### Phase 2：后端集成（依赖 Phase 1）
 
-| ID | 任务 | Files | DoD |
-|---|---|---|---|
-| **M6** | Orchestrator 串起感知+决策+执行（Plan C 双事务）| `services/orchestrator.py` | 输入 AssessmentRequest，输出 AssessmentResult；写入 assessment + symptom_observation + evidence + advice 共 4 表 |
-| **M7** | `POST /api/v1/assessments` 接通 Orchestrator | `api/assessments.py` | curl 提交描述能拿到完整 AssessmentResult JSON |
-| **M8** | `GET /api/v1/assessments/{id}` 实现 | `api/assessments.py` | 能从 4 张表 join 出完整 AssessmentResult（含审计三件套）|
-| **M9** | Models 补全（其余 8 张表）| `app/models/*.py` | `from app.models import *` 不报错；Alembic 跳过，直接用 schema.sql 建表 |
+| ID | 任务 | Files | DoD | 状态 |
+|---|---|---|---|---|
+| **M6** | Orchestrator 串起感知+决策+执行（Plan C 双事务，含补全 ORM 模型）| `services/orchestrator.py` + `models/symptom_observation.py` / `advice.py` / `evidence.py` | 输入 AssessmentRequest，输出 AssessmentResult；写入 4 表；幂等查重 | 📋 任务卡就绪 |
+| **M7** | `POST /api/v1/assessments` 接通 Orchestrator + EventEmitter | `api/assessments.py` + `services/event_emitter.py` + `models/event_log.py` | curl 提交能拿到 AssessmentResult；event_log 写入；幂等返回相同 id | 📋 任务卡就绪 |
+| **M8** | `GET /api/v1/assessments/{id}` 实现 | `api/assessments.py` | 能从 4 张表 join 出完整 AssessmentResult（含审计三件套）；触发 result_viewed | 📋 任务卡就绪 |
+| ~~M9~~ | ~~Models 补全~~ | 已并入 M6 | — | — |
 
 **Phase 2 验收**：
 ```bash
