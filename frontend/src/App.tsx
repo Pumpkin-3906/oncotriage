@@ -1,5 +1,6 @@
 import { Routes, Route, Link, Navigate, useNavigate } from "react-router-dom";
 import InputPage from "./pages/InputPage";
+import ConfirmExtractionPage from "./pages/ConfirmExtractionPage";
 import ResultPage from "./pages/ResultPage";
 import HistoryPage from "./pages/HistoryPage";
 import OnboardingPage from "./pages/OnboardingPage";
@@ -38,6 +39,7 @@ export default function App() {
         <Routes>
           <Route path="/" element={<RootRedirect />} />
           <Route path="/onboarding" element={<OnboardingPage />} />
+          <Route path="/confirm" element={<ConfirmExtractionPage />} />
           <Route path="/result/:id" element={<ResultPage />} />
           <Route path="/history" element={<HistoryPage />} />
           <Route path="*" element={<Navigate to="/" />} />

@@ -24,6 +24,8 @@ export interface SymptomSpec {
   value_type: ValueType;
   grading_scheme: GradingScheme;
   unit?: string; // 仅 value_type=numeric 时有意义
+  emoji?: string;
+  numeric_placeholder?: string;
 }
 
 export const SYMPTOMS: SymptomSpec[] = [
