@@ -18,13 +18,18 @@ from app.schemas.assessment import (
     AssessmentResult,
     AssessmentSummary,
     AuditInfo,
+    CompletenessInfo,
+    ExtractRequest,
+    ExtractResponse,
     MatchedRule,
     ParsedSymptoms,
     SymptomItem,
 )
+from app.services.completeness_checker import CompletenessChecker
 from app.services.event_emitter import EventEmitter
-from app.services.llm_extractor import LLMExtractionError
+from app.services.llm_extractor import LLMExtractionError, LLMExtractor
 from app.services.orchestrator import Orchestrator
+import sqlalchemy as sa
 
 
 logger = logging.getLogger(__name__)
@@ -159,7 +164,85 @@ def _build_result_from_db(
     )
 
 
+# ── 字典加载（与 Orchestrator._load_dictionary 一致；extract 端点要用） ──
+def _load_dictionary(db: Session) -> list[dict]:
+    rows = db.execute(
+        sa.text(
+            "SELECT id, display_name_zh, value_type, grading_scheme, aliases_zh "
+            "FROM symptom_dictionary"
+        )
+    ).mappings().all()
+    return [dict(r) for r in rows]
+
+
+def _build_extractor() -> LLMExtractor:
+    """单独抽出来便于测试 monkeypatch（注入 FakeExtractor）。"""
+    return LLMExtractor()
+
+
 # ── 路由 ─────────────────────────────────────────────────────
+@router.post(
+    "/assessments/extract",
+    response_model=ExtractResponse,
+    status_code=200,
+)
+def extract_assessment(
+    req: ExtractRequest,
+    db: Session = Depends(get_db),
+) -> ExtractResponse:
+    """无状态预览：仅做 LLM 抽取 + 完整性检查，不写任何库。
+
+    - input_source=free_text: 调 LLM 抽取
+    - input_source=checklist: 直接用 form_payload 构造 ParsedSymptoms（跳过 LLM）
+
+    LLM 抽取失败 → 422 + reason='extraction_failed'，前端可建议改用清单模式。
+    """
+    dictionary = _load_dictionary(db)
+
+    if req.input_source == "free_text":
+        extractor = _build_extractor()
+        try:
+            parsed = extractor.extract(req.raw_input_text or "", dictionary)
+        except LLMExtractionError:
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "reason": "extraction_failed",
+                    "message": "无法解析您的描述，建议改用清单模式",
+                },
+            )
+        model_version = extractor.model
+    else:  # checklist
+        try:
+            parsed = ParsedSymptoms.model_validate(req.form_payload or {})
+        except Exception as e:  # pydantic ValidationError 等
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "reason": "invalid_form_payload",
+                    "message": f"form_payload 不符合 ParsedSymptoms 结构: {e}",
+                },
+            )
+        # checklist 不调 LLM，但 model_version 字段保留 LLMExtractor.model 值（审计追溯）
+        try:
+            model_version = _build_extractor().model
+        except Exception:  # pragma: no cover - 仅为 model 元信息，不应阻塞
+            model_version = "n/a"
+
+    completeness_result = CompletenessChecker(dictionary).check(parsed)
+    return ExtractResponse(
+        parsed_symptoms=parsed,
+        completeness=CompletenessInfo(
+            is_complete=completeness_result.is_complete,
+            missing_slots=[
+                {"symptom_id": m.symptom_id, "missing_fields": list(m.missing_fields)}
+                for m in completeness_result.missing_slots
+            ],
+        ),
+        extraction_model_version=model_version,
+    )
+
+
 @router.post("/assessments", response_model=AssessmentResult, status_code=201)
 def submit_assessment(
     req: AssessmentRequest,
@@ -236,13 +319,71 @@ def get_assessment(
     return result
 
 
-@router.get("/users/{user_id}/assessments", response_model=list[AssessmentSummary])
+def _primary_symptom_from_evidence(evidence_rows: list[Evidence]) -> str | None:
+    """从主命中规则的 matched_fields 反查首个 symptom id。
+
+    - matched_fields 含形如 'symptom_<id>_<field>' 的 key（如 symptom_fever_numeric_value）
+    - 兜底规则 R999 / 没有命中 / 没有 symptom_ 前缀的字段 → 返回 None
+    """
+    if not evidence_rows:
+        return None
+    primary = evidence_rows[0]
+    if primary.rule_id == "R999":
+        return None
+    fields = primary.matched_fields or {}
+    for key in fields.keys():
+        if not key.startswith("symptom_"):
+            continue
+        # symptom_<id>_<rest>；id 可能含下划线 → 取第二段，且不再切：
+        # 字典里所有 id 都是单一 token（fever / nausea / diarrhea ...）
+        parts = key.split("_", 2)
+        if len(parts) >= 2 and parts[1]:
+            return parts[1]
+    return None
+
+
+@router.get(
+    "/users/{user_id}/assessments",
+    response_model=dict,  # {"items": [...], "next_cursor": null}
+)
 def list_assessments(
     user_id: UUID,
-    limit: int = 20,
+    limit: int = 100,
     cursor: str | None = None,
     db: Session = Depends(get_db),
-) -> list[AssessmentSummary]:
-    """获取用户历史评估（按时间倒序）"""
-    # TODO: 实现游标分页
-    raise HTTPException(status_code=501, detail="Not implemented")
+) -> dict:
+    """获取用户历史评估（按 created_at desc）。
+
+    Response: {"items": [AssessmentSummary], "next_cursor": null}
+    primary_symptom 从主命中规则的 evidence.matched_fields 反查；
+    兜底规则 R999 或无规则 → null。
+    """
+    # 限制 limit 上限，防止无界扫描
+    limit = max(1, min(limit, 200))
+
+    assessments: list[Assessment] = (
+        db.query(Assessment)
+        .filter(Assessment.user_id == user_id)
+        .order_by(Assessment.created_at.desc())
+        .limit(limit)
+        .all()
+    )
+
+    items: list[dict] = []
+    for a in assessments:
+        ev_rows: list[Evidence] = (
+            db.query(Evidence)
+            .filter(Evidence.assessment_id == a.id)
+            .order_by(Evidence.matched_at.asc())
+            .all()
+        )
+        items.append(
+            AssessmentSummary(
+                assessment_id=a.id,
+                created_at=a.created_at,
+                risk_level=a.risk_level or "low",
+                primary_symptom=_primary_symptom_from_evidence(ev_rows),
+            ).model_dump(mode="json")
+        )
+
+    return {"items": items, "next_cursor": None}
