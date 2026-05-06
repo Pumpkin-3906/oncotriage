@@ -8,7 +8,7 @@ export default function HistoryPage() {
 
   useEffect(() => {
     // TODO: 从登录态/Context 拿 user_id
-    listAssessments("CURRENT_USER_ID")
+    listAssessments(localStorage.getItem("sz_demo_user_id") || "00000000-0000-0000-0000-000000000001")
       .then(setItems)
       .finally(() => setLoading(false));
   }, []);

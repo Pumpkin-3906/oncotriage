@@ -7,6 +7,30 @@
 
 const BASE = "/api/v1";
 
+// ── MVP demo 身份（无登录）─────────────────────────────────
+// 单次浏览器会话内固定 user_id；演示用，生产环境需走真实登录态
+const DEMO_USER_KEY = "sz_demo_user_id";
+const SESSION_KEY = "sz_session_id";
+
+function getDemoUserId(): string {
+  let id = localStorage.getItem(DEMO_USER_KEY);
+  if (!id) {
+    // 演示用固定 UUID（与后端 DB 中已 INSERT 的 demo user 对应）
+    id = "00000000-0000-0000-0000-000000000001";
+    localStorage.setItem(DEMO_USER_KEY, id);
+  }
+  return id;
+}
+
+function getSessionId(): string {
+  let id = sessionStorage.getItem(SESSION_KEY);
+  if (!id) {
+    id = crypto.randomUUID();
+    sessionStorage.setItem(SESSION_KEY, id);
+  }
+  return id;
+}
+
 // ── 类型定义（与后端 schemas/assessment.py 对应）─────────────
 export interface AssessmentResult {
   assessment_id: string;
@@ -54,9 +78,8 @@ export async function submitAssessment(input: {
       "Idempotency-Key": idempotencyKey,
     },
     body: JSON.stringify({
-      // TODO: 从登录态拿 user_id, session_id
-      user_id: "CURRENT_USER_ID",
-      session_id: "CURRENT_SESSION_ID",
+      user_id: getDemoUserId(),
+      session_id: getSessionId(),
       input_source: "free_text",
       idempotency_key: idempotencyKey,
       raw_input_text: input.raw_input_text,
