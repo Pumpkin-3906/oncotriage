@@ -28,7 +28,9 @@ class Settings(BaseSettings):
     llm_temperature: float = 0.0
 
     # ── LLM Anthropic 通道 ────────────────────────────────────
+    # base_url 留空 = 走 Anthropic 官方；可指向兼容端点（如 DeepSeek 的 Anthropic-compat）
     anthropic_api_key: str = ""
+    anthropic_base_url: str = ""
     anthropic_model: str = "claude-sonnet-4-5-20250929"
 
     # ── LLM OpenAI-compat 通道 ───────────────────────────────

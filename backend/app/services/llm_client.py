@@ -33,7 +33,7 @@ class LLMClient(Protocol):
 
 
 class AnthropicLLMClient:
-    """Anthropic Messages API 实现"""
+    """Anthropic Messages API 实现 —— base_url 可指向兼容端点（如 DeepSeek 的 Anthropic-compat）"""
 
     def __init__(
         self,
@@ -42,12 +42,16 @@ class AnthropicLLMClient:
         max_tokens: int,
         temperature: float,
         timeout: float,
+        base_url: str | None = None,
     ) -> None:
         import anthropic  # 延迟导入：让只用 OpenAI 的部署不强依赖 anthropic SDK
         if not api_key:
             raise LLMClientError("anthropic_api_key is empty; set ANTHROPIC_API_KEY")
         self._anthropic = anthropic
-        self.client = anthropic.Anthropic(api_key=api_key)
+        kwargs: dict = {"api_key": api_key}
+        if base_url:
+            kwargs["base_url"] = base_url
+        self.client = anthropic.Anthropic(**kwargs)
         self.model = model
         self.max_tokens = max_tokens
         self.temperature = temperature
@@ -66,9 +70,17 @@ class AnthropicLLMClient:
         except self._anthropic.APIError as e:
             raise LLMClientError(f"Anthropic API call failed: {e}") from e
 
-        if not response.content or not hasattr(response.content[0], "text"):
-            raise LLMClientError("Anthropic response has no text content")
-        text = response.content[0].text
+        # 响应可能含多种 content block：text / thinking / tool_use 等
+        # （reasoning model 与 DeepSeek Anthropic-compat 端点都会返 thinking 块）
+        # 只取第一个 text 块；没有则视为失败。
+        text_blocks = [b for b in (response.content or []) if getattr(b, "type", None) == "text"]
+        if not text_blocks:
+            raise LLMClientError(
+                f"Anthropic response has no text block "
+                f"(stop_reason={getattr(response, 'stop_reason', None)!r}, "
+                f"got types={[getattr(b, 'type', '?') for b in (response.content or [])]})"
+            )
+        text = text_blocks[0].text
         if not text:
             raise LLMClientError("Anthropic returned empty text")
         return text
@@ -139,5 +151,6 @@ def build_default_llm_client() -> LLMClient:
             max_tokens=settings.llm_max_tokens,
             temperature=settings.llm_temperature,
             timeout=settings.llm_timeout_seconds,
+            base_url=settings.anthropic_base_url or None,
         )
     raise LLMClientError(f"Unknown llm_provider: {settings.llm_provider!r}")

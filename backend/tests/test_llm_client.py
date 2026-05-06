@@ -20,11 +20,27 @@ from app.services.llm_client import (
 
 # ── Anthropic client ─────────────────────────────────────────
 
-def _anthropic_response(text: str) -> MagicMock:
-    block = MagicMock()
-    block.text = text
+def _anthropic_response(text: str, *, prefix_thinking: bool = False) -> MagicMock:
+    """构造 Anthropic Messages 响应桩。
+
+    prefix_thinking=True 时在 text 前插入一个 thinking 块，模拟 reasoning model
+    /DeepSeek Anthropic-compat 端点的真实响应形态。
+    """
+    text_block = MagicMock()
+    text_block.type = "text"
+    text_block.text = text
+
+    blocks = []
+    if prefix_thinking:
+        thinking = MagicMock()
+        thinking.type = "thinking"
+        # 故意不设 .text —— 验证我们正确跳过这种块
+        blocks.append(thinking)
+    blocks.append(text_block)
+
     response = MagicMock()
-    response.content = [block]
+    response.content = blocks
+    response.stop_reason = "end_turn"
     return response
 
 
@@ -48,6 +64,20 @@ def test_anthropic_client_passes_params_and_returns_text():
     assert kwargs["messages"] == [{"role": "user", "content": "USER"}]
 
 
+def test_anthropic_client_honors_base_url():
+    """base_url 用于打到 Anthropic-compat 端点（如 DeepSeek 的 /anthropic）"""
+    client = AnthropicLLMClient(
+        api_key="sk-test",
+        model="deepseek-v4-pro",
+        max_tokens=512,
+        temperature=0.0,
+        timeout=10,
+        base_url="https://api.deepseek.com/anthropic",
+    )
+    # SDK 内部把 base_url 存为带斜杠后缀的形式
+    assert str(client.client.base_url).rstrip("/") == "https://api.deepseek.com/anthropic"
+
+
 def test_anthropic_client_translates_api_error():
     client = AnthropicLLMClient(
         api_key="sk-ant-test", model="claude-x", max_tokens=512, temperature=0.0, timeout=10
@@ -66,9 +96,42 @@ def test_anthropic_client_raises_on_empty_response():
     )
     empty = MagicMock()
     empty.content = []
+    empty.stop_reason = "end_turn"
 
     with patch.object(client.client.messages, "create", return_value=empty):
-        with pytest.raises(LLMClientError, match="no text content"):
+        with pytest.raises(LLMClientError, match="no text block"):
+            client.complete("SYS", "USER")
+
+
+def test_anthropic_client_skips_thinking_block():
+    """reasoning model / DeepSeek Anthropic-compat 会返 thinking 块在前 —— 必须跳过它取后面的 text 块"""
+    client = AnthropicLLMClient(
+        api_key="sk-ant-test", model="claude-x", max_tokens=512, temperature=0.0, timeout=10
+    )
+
+    with patch.object(
+        client.client.messages,
+        "create",
+        return_value=_anthropic_response("real answer", prefix_thinking=True),
+    ):
+        result = client.complete("SYS", "USER")
+
+    assert result == "real answer"
+
+
+def test_anthropic_client_raises_when_only_thinking_block():
+    """响应只有 thinking 没 text（比如 max_tokens 在思考阶段就被截断）→ 显式失败"""
+    client = AnthropicLLMClient(
+        api_key="sk-ant-test", model="claude-x", max_tokens=512, temperature=0.0, timeout=10
+    )
+    thinking = MagicMock()
+    thinking.type = "thinking"
+    truncated = MagicMock()
+    truncated.content = [thinking]
+    truncated.stop_reason = "max_tokens"
+
+    with patch.object(client.client.messages, "create", return_value=truncated):
+        with pytest.raises(LLMClientError, match="no text block.*max_tokens"):
             client.complete("SYS", "USER")
 
 
