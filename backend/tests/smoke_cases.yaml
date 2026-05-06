@@ -96,23 +96,32 @@
   input: "我发烧了"
   expected:
     extracted_symptoms_must_include: [fever]
-    confidence_max: 0.95
-  notes: "fever 缺 numeric_value —— M3 完成后应触发 CompletenessChecker"
+    completeness:
+      is_complete: false
+      missing_slots_must_include: [fever]
+  notes: "fever 缺 numeric_value → CompletenessChecker 应在 missing_slots 列出 fever"
 
 - id: SMOKE_A4_002_nausea_no_grade
   category: missing_info
-  input: "今天有点恶心"
+  input: "今天总想吐"
   expected:
     extracted_symptoms_must_include: [nausea]
-    confidence_max: 0.95
-  notes: "nausea 缺 grade/categorical_value —— M3 完成后应触发追问"
+    completeness:
+      is_complete: false
+      missing_slots_must_include: [nausea]
+  notes: |
+    nausea 缺 ctcae_grade/categorical_value → CompletenessChecker 触发追问。
+    注意：故意用"总想吐"（频率词）而非"有点想吐"（程度词），避免 LLM 自动推断 mild。
+    这也是给 prompt 的反向提示——LLM 不该在用户没明说时主动推断 severity。
 
 - id: SMOKE_A4_003_chest_discomfort_vague
   category: missing_info
   input: "胸口不舒服"
   expected:
     extracted_symptoms_must_include: [severe_chest_pain]
-    confidence_max: 0.9
+    completeness:
+      is_complete: false
+      missing_slots_must_include: [severe_chest_pain]
   notes: "marginal: LLM 可能因 '不舒服' 太弱而不抽 severe_chest_pain。expect ~80% pass"
 
 # ════════════════════════════════════════════════════════════════════

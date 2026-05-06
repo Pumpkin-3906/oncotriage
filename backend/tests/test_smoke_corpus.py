@@ -7,7 +7,7 @@
 - 默认 pytest 跳过这些用例（@pytest.mark.smoke）
 - 不 mock LLM —— 必须打真实 Anthropic API
 - 断言宽松（must_include 而非 only_include；confidence 用区间）
-- M3 (RuleEngine) 完成前，仅断言抽取层；M3 之后再加 full pipeline 测试
+- 同一次 LLM 抽取的结果同时喂给 CompletenessChecker，避免重复调 API
 
 参考：docs/tasks/M_smoke_corpus.md
 """
@@ -17,6 +17,7 @@ import pytest
 import yaml
 
 from app.rules.seed_dictionary import SYMPTOMS
+from app.services.completeness_checker import CompletenessChecker
 from app.services.llm_extractor import LLMExtractor
 
 SMOKE_FILE = Path(__file__).parent / "smoke_cases.yaml"
@@ -93,3 +94,28 @@ def test_llm_extraction(case, extractor):
             f"got {result.confidence:.2f}, want <= {expected['confidence_max']}\n"
             f"  notes = {case.get('notes', '')}"
         )
+
+    # ── CompletenessChecker 断言 ─────────────────────────────
+    # 与 LLM 抽取共用结果，避免重复调 API。
+    # CompletenessChecker 是纯规则查表，确定性，"信息缺失"判断不依赖 LLM 自评。
+    if "completeness" in expected:
+        spec = expected["completeness"]
+        completeness = CompletenessChecker(SYMPTOMS).check(result)
+
+        if "is_complete" in spec:
+            assert completeness.is_complete is spec["is_complete"], (
+                f"[{case['id']}] completeness.is_complete mismatch: "
+                f"got {completeness.is_complete}, want {spec['is_complete']}\n"
+                f"  symptoms      = {[(s.symptom_id, s.numeric_value, s.ctcae_grade, s.categorical_value) for s in result.symptoms]}\n"
+                f"  missing_slots = {[(m.symptom_id, m.missing_fields) for m in completeness.missing_slots]}\n"
+                f"  notes         = {case.get('notes', '')}"
+            )
+
+        missing_ids = {m.symptom_id for m in completeness.missing_slots}
+        for sid in spec.get("missing_slots_must_include", []):
+            assert sid in missing_ids, (
+                f"[{case['id']}] expected {sid!r} in missing_slots, "
+                f"but only got {sorted(missing_ids)}\n"
+                f"  symptoms = {[(s.symptom_id, s.numeric_value, s.ctcae_grade, s.categorical_value) for s in result.symptoms]}\n"
+                f"  notes    = {case.get('notes', '')}"
+            )
