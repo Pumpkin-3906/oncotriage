@@ -53,9 +53,9 @@
 |---|---|---|---|---|---|
 | ~~**M1**~~ | ~~应用 schema 到本地 DB~~ | `backend/scripts/init_db.sh` | 11 表 + 1 视图建好 | claude | ✅ |
 | ~~**M2**~~ | ~~症状字典 seed~~ | `backend/app/rules/seed_dictionary.py` + alignment test | 12 条 / 幂等 / 与 rules.yaml 一致 | claude | ✅ |
-| **M3+M4** | 决策层（规则引擎 + CompletenessChecker + 测试）| `services/rule_engine.py` + `services/completeness_checker.py` + 2 个测试文件 | 见任务卡 v2 | TBD（重派）| 🔄 |
-| **M5** | LLM extractor 实现 | `backend/app/services/llm_extractor.py` + tests | 给定描述能返回合法 ParsedSymptoms；超时/JSON 解析失败抛 `LLMExtractionError` | agent | ✅ feat 分支待 merge |
-| **M_smoke** | 真实患者语料冒烟集（18+ cases）| `tests/smoke_cases.yaml` + `test_smoke_corpus.py` | 见任务卡 | TBD | 📋 |
+| ~~**M3+M4**~~ | ~~决策层（规则引擎 + CompletenessChecker + 测试）~~ | `services/rule_engine.py` + `services/completeness_checker.py` + 2 个测试文件 | 含 `always:true` fallback 优化；7+8 个单测 | agent | ✅ merged PR #1 |
+| ~~**M5**~~ | ~~LLM extractor 实现~~ | `backend/app/services/llm_extractor.py` + `llm_client.py` (multi-provider) + tests | 抽取 + 双 provider 抽象（Anthropic + OpenAI 兼容）+ 12 mock + 真实 smoke 验证 | agent | ✅ merged PR #2 |
+| ~~**M_smoke**~~ | ~~真实患者语料冒烟集（18+ cases）~~ | `tests/smoke_cases.yaml` + `test_smoke_corpus.py` + `SMOKE.md` | 20 cases / 100% pass on real API / ~$0.10 per run | agent | ✅ merged PR #3 |
 
 **Phase 1 验收**：
 ```bash
@@ -72,9 +72,9 @@ python -c "from app.services.llm_extractor import LLMExtractor; print(LLMExtract
 
 | ID | 任务 | Files | DoD | 状态 |
 |---|---|---|---|---|
-| **M6** | Orchestrator 串起感知+决策+执行（Plan C 双事务，含补全 ORM 模型）| `services/orchestrator.py` + `models/symptom_observation.py` / `advice.py` / `evidence.py` | 输入 AssessmentRequest，输出 AssessmentResult；写入 4 表；幂等查重 | 📋 任务卡就绪 |
-| **M7** | `POST /api/v1/assessments` 接通 Orchestrator + EventEmitter | `api/assessments.py` + `services/event_emitter.py` + `models/event_log.py` | curl 提交能拿到 AssessmentResult；event_log 写入；幂等返回相同 id | 📋 任务卡就绪 |
-| **M8** | `GET /api/v1/assessments/{id}` 实现 | `api/assessments.py` | 能从 4 张表 join 出完整 AssessmentResult（含审计三件套）；触发 result_viewed | 📋 任务卡就绪 |
+| **M6** | Orchestrator 串起感知+决策+执行（Plan C 双事务，含补全 ORM 模型）| `services/orchestrator.py` + `models/symptom_observation.py` / `advice.py` / `evidence.py` | 输入 AssessmentRequest，输出 AssessmentResult；写入 4 表；幂等查重 | 🚀 已派 agent |
+| **M7** | `POST /api/v1/assessments` 接通 Orchestrator + EventEmitter | `api/assessments.py` + `services/event_emitter.py` + `models/event_log.py` | curl 提交能拿到 AssessmentResult；event_log 写入；幂等返回相同 id | ⏸ 等 M6 |
+| **M8** | `GET /api/v1/assessments/{id}` 实现 | `api/assessments.py` | 能从 4 张表 join 出完整 AssessmentResult（含审计三件套）；触发 result_viewed | ⏸ 等 M6 |
 | ~~M9~~ | ~~Models 补全~~ | 已并入 M6 | — | — |
 
 **Phase 2 验收**：
