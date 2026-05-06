@@ -75,8 +75,14 @@ class Orchestrator:
         bundle = self._get_rules_bundle()
 
         # Tx1: 抽取 + 写 assessment + symptom_observation
-        parsed = self._get_extractor().extract(req.raw_input_text or "", dictionary)
-        assessment = self._persist_extraction(req, parsed)
+        # MVP+1：调用方传 parsed_symptoms（用户在 extract 预览后确认/编辑）→ 跳过 LLM
+        if req.parsed_symptoms is not None:
+            parsed = req.parsed_symptoms
+            extraction_source = "user_confirmed"
+        else:
+            parsed = self._get_extractor().extract(req.raw_input_text or "", dictionary)
+            extraction_source = "llm"
+        assessment = self._persist_extraction(req, parsed, extraction_source)
 
         # 完整性检查：MVP 仅日志，不阻塞流程
         completeness = CompletenessChecker(dictionary).check(parsed)
@@ -129,7 +135,10 @@ class Orchestrator:
 
     # ── Tx1 持久化 ──────────────────────────────────────────────
     def _persist_extraction(
-        self, req: AssessmentRequest, parsed: ParsedSymptoms
+        self,
+        req: AssessmentRequest,
+        parsed: ParsedSymptoms,
+        extraction_source: str = "llm",
     ) -> Assessment:
         """Tx1：写 assessment + symptom_observation；失败回滚由调用方 raise。
 
@@ -162,7 +171,7 @@ class Orchestrator:
                     ctcae_grade=sym.ctcae_grade,
                     duration_hours=sym.duration_hours,
                     interferes_with_adl=sym.interferes_with_adl,
-                    extraction_source="llm",
+                    extraction_source=extraction_source,
                     extraction_confidence=parsed.confidence,
                 ))
             self.db.commit()
