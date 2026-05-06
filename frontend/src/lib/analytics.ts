@@ -14,7 +14,10 @@ export type EventType =
   | "assessment_submitted"
   | "result_viewed"
   | "contact_team_clicked"
-  | "assessment_closed";
+  | "assessment_closed"
+  // MVP+3：confirm 页生命周期
+  | "confirm_page_viewed"
+  | "extraction_confirmed";
 
 interface EventRecord {
   event_id: string;       // 客户端生成 UUID，后端可用于去重

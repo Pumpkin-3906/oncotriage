@@ -201,3 +201,159 @@ export function emptyParsedSymptoms(): ParsedSymptomsForm {
     confidence: null,
   };
 }
+// ── 完整性检查（mirror backend completeness_checker.py）────────
+
+/** 与后端 REQUIRED_BY_VALUE_TYPE 完全一致：内层 AND，外层 OR */
+const REQUIRED_BY_VALUE_TYPE: Record<"numeric" | "categorical", string[][]> = {
+  numeric: [["numeric_value"]],
+  categorical: [["ctcae_grade"], ["categorical_value"]],
+};
+
+export interface MissingSlot {
+  symptom_id: string;
+  missing_fields: string[];
+}
+
+export interface CompletenessInfo {
+  is_complete: boolean;
+  missing_slots: MissingSlot[];
+}
+
+/**
+ * 前端本地重算 completeness。
+ * 与 backend services/completeness_checker.py 行为一致：
+ *   - 空 symptoms → is_complete=true（兜底由 R999 处理）
+ *   - 字典里没有的 symptom_id → missing_fields=['unknown_symptom_in_dictionary']
+ *   - binary 或无要求 → 视为完整
+ *   - numeric → 必须有 numeric_value
+ *   - categorical → ctcae_grade 或 categorical_value 至少一个有值
+ */
+export function recomputeCompleteness(
+  parsed: ParsedSymptomsForm
+): CompletenessInfo {
+  if (!parsed.symptoms || parsed.symptoms.length === 0) {
+    return { is_complete: true, missing_slots: [] };
+  }
+
+  const missing: MissingSlot[] = [];
+
+  for (const item of parsed.symptoms) {
+    const spec = symptomById(item.symptom_id);
+    if (!spec) {
+      missing.push({
+        symptom_id: item.symptom_id,
+        missing_fields: ["unknown_symptom_in_dictionary"],
+      });
+      continue;
+    }
+
+    const groups = REQUIRED_BY_VALUE_TYPE[spec.value_type];
+    if (!groups || groups.length === 0) continue;
+
+    const satisfied = groups.some((group) =>
+      group.every((f) => fieldHasValue(item, f))
+    );
+    if (satisfied) continue;
+
+    // 都没填：摊平到一个去重列表
+    const wanted: string[] = [];
+    for (const group of groups) {
+      for (const f of group) {
+        if (!wanted.includes(f)) wanted.push(f);
+      }
+    }
+    missing.push({ symptom_id: item.symptom_id, missing_fields: wanted });
+  }
+
+  return { is_complete: missing.length === 0, missing_slots: missing };
+}
+
+function fieldHasValue(item: SymptomItem, key: string): boolean {
+  const v = (item as unknown as Record<string, unknown>)[key];
+  return v !== null && v !== undefined && v !== "";
+}
+
+// ── 编辑助手 ─────────────────────────────────────────────────
+
+/** 给指定 spec 创建一个空白 SymptomItem（"补充症状"用） */
+export function makeEmptySymptom(spec: SymptomSpec): SymptomItem {
+  return {
+    symptom_id: spec.id,
+    numeric_value: null,
+    numeric_unit: spec.unit ?? null,
+    categorical_value: null,
+    ctcae_grade: null,
+    duration_hours: null,
+    interferes_with_adl: null,
+  };
+}
+
+/** 比对 LLM 原版 vs 用户编辑版，返回被编辑过 / 新增 / 删除的症状数 */
+export function countEdits(
+  original: ParsedSymptomsForm,
+  edited: ParsedSymptomsForm
+): number {
+  const origIndex = new Map(original.symptoms.map((s) => [s.symptom_id, s]));
+  const editIndex = new Map(edited.symptoms.map((s) => [s.symptom_id, s]));
+
+  let count = 0;
+  // 删除：原有但当前没有
+  for (const id of origIndex.keys()) {
+    if (!editIndex.has(id)) count += 1;
+  }
+  // 新增 / 字段变更
+  for (const [id, item] of editIndex) {
+    const orig = origIndex.get(id);
+    if (!orig) {
+      count += 1;
+      continue;
+    }
+    if (!shallowSymptomEqual(orig, item)) count += 1;
+  }
+  return count;
+}
+
+function shallowSymptomEqual(a: SymptomItem, b: SymptomItem): boolean {
+  const keys: (keyof SymptomItem)[] = [
+    "numeric_value",
+    "numeric_unit",
+    "categorical_value",
+    "ctcae_grade",
+    "duration_hours",
+    "interferes_with_adl",
+  ];
+  return keys.every((k) => a[k] === b[k]);
+}
+
+// ── CTCAE Grade 选项（卡片渲染用）─────────────────────────────
+
+export interface GradeOption {
+  value: number | string;
+  label: string;
+  /** 写回到 SymptomItem 的字段名 */
+  field: "ctcae_grade" | "categorical_value";
+}
+
+/**
+ * categorical 症状的等级选项 —— 按 grading_scheme 区分：
+ *   - ctcae_v5: 写 ctcae_grade (1/2/3)
+ *   - severity_3: 写 categorical_value ("mild"/"moderate"/"severe")
+ * MVP 只暴露 G1-G3，更高级别由临床流程接管。
+ */
+export function gradeOptions(spec: SymptomSpec): GradeOption[] {
+  if (spec.grading_scheme === "ctcae_v5") {
+    return [
+      { value: 1, label: "轻 (G1)", field: "ctcae_grade" },
+      { value: 2, label: "中 (G2)", field: "ctcae_grade" },
+      { value: 3, label: "重 (G3+)", field: "ctcae_grade" },
+    ];
+  }
+  if (spec.grading_scheme === "severity_3") {
+    return [
+      { value: "mild", label: "轻", field: "categorical_value" },
+      { value: "moderate", label: "中", field: "categorical_value" },
+      { value: "severe", label: "重", field: "categorical_value" },
+    ];
+  }
+  return [];
+}

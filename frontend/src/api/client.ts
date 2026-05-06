@@ -34,6 +34,8 @@ function getSessionId(): string {
 }
 
 // ── 类型定义（与后端 schemas/assessment.py 对应）─────────────
+
+// 抽取结果（LLM 输出 / 用户确认版共用此结构）
 export interface AssessmentResult {
   assessment_id: string;
   created_at: string;
@@ -55,7 +57,7 @@ export interface AssessmentResult {
     rule_engine_version: string;
     extraction_model_version: string | null;
   };
-  parsed_symptoms: unknown;
+  parsed_symptoms: ParsedSymptomsForm;
 }
 
 export interface AssessmentSummary {
@@ -69,6 +71,13 @@ export interface AssessmentSummary {
 export async function submitAssessment(input: {
   raw_input_text: string;
   idempotency_key?: string;  // 可选；不传则自动生成
+  /**
+   * 用户在 ConfirmExtractionPage 审阅/编辑后的结构化症状。
+   * 传入则后端跳过 LLM 抽取，直接进规则引擎；不传保持向后兼容（走 LLM）。
+   */
+  parsed_symptoms?: ParsedSymptomsForm;
+  /** 默认 free_text；checklist 提交时由 InputPage 显式传 */
+  input_source?: "free_text" | "checklist_fallback";
 }): Promise<AssessmentResult> {
   const idempotencyKey = input.idempotency_key ?? crypto.randomUUID();
 
@@ -82,9 +91,10 @@ export async function submitAssessment(input: {
     body: JSON.stringify({
       user_id: getDemoUserId(),
       session_id: getSessionId(),
-      input_source: "free_text",
+      input_source: input.input_source ?? "free_text",
       idempotency_key: idempotencyKey,
       raw_input_text: input.raw_input_text,
+      parsed_symptoms: input.parsed_symptoms,
     }),
   });
   if (!res.ok) throw new Error(`Submit failed: ${res.status}`);
