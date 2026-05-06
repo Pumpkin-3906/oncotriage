@@ -45,11 +45,9 @@ class SymptomObservation(Base):
     user_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("users.id"), nullable=False
     )
-    symptom_id: Mapped[str] = mapped_column(
-        String(64),
-        ForeignKey("symptom_dictionary.id"),
-        nullable=False,
-    )
+    # FK 由 DB 强制（schema.sql 已声明）；ORM 暂不建模 SymptomDictionary，
+    # 因此这里只声明列、不在 ORM 层加 ForeignKey 以避免 metadata 解析错。
+    symptom_id: Mapped[str] = mapped_column(String(64), nullable=False)
     observed_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
