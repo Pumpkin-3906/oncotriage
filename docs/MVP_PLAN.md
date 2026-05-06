@@ -49,13 +49,13 @@
 
 ### Phase 1：基础（可并行 ≥3 个 agent 同时干）
 
-| ID | 任务 | Files | DoD | 估算 LOC |
-|---|---|---|---|---|
-| **M1** | 应用 schema 到本地 DB | `docs/data_model/schema.sql` (用) + 建一个 `backend/scripts/init_db.sh` | `psql` 能从空库建出 11 表 + 1 视图，无报错 | 20 |
-| **M2** | 症状字典 seed | `backend/app/rules/seed_dictionary.py` | 12 条 `INSERT` 语句执行后 `SELECT COUNT(*) FROM symptom_dictionary` = 12 | 50 |
-| **M3** | 规则引擎 `_matches()` 实现 | `backend/app/services/rule_engine.py` | 支持 `all_of` / `any_of` / `always` 求值；支持 `numeric_value` 操作符（`gte/lte/lt/gt/eq`/`in`）和 `ctcae_grade`、`categorical_value`、`context.days_since_chemo` 字段 | 80 |
-| **M4** | 规则引擎单元测试 | `backend/tests/test_rule_engine.py` | 覆盖：R001 命中（高烧+化疗后）、R020 命中（轻度恶心）、R999 兜底、Plan D 多规则同时命中 | 100 |
-| **M5** | LLM extractor 实现 | `backend/app/services/llm_extractor.py` | 给定描述能返回合法 ParsedSymptoms；超时/JSON 解析失败抛 `LLMExtractionError` | 80 |
+| ID | 任务 | Files | DoD | Owner | 估算 LOC |
+|---|---|---|---|---|---|
+| ~~**M1**~~ | ~~应用 schema 到本地 DB~~ | `backend/scripts/init_db.sh` | ✅ 11 表 + 1 视图建好 | claude | 20 |
+| ~~**M2**~~ | ~~症状字典 seed~~ | `backend/app/rules/seed_dictionary.py` + `tests/test_dictionary_rules_alignment.py` | ✅ 12 条 / 幂等 / 与 rules.yaml 一致性测试 | claude | 50 |
+| **M3** | 规则引擎 `_matches()` 实现 | `backend/app/services/rule_engine.py` | 支持 `all_of` / `any_of` / `always` 求值；支持 `numeric_value` 操作符（`gte/lte/lt/gt/eq`/`in`）和 `ctcae_grade`、`categorical_value`、`context.days_since_chemo` 字段 | TBD | 80 |
+| **M4** | 规则引擎单元测试 | `backend/tests/test_rule_engine.py` | 覆盖：R001 命中（高烧+化疗后）、R020 命中（轻度恶心）、R999 兜底、Plan D 多规则同时命中 | TBD | 100 |
+| **M5** | LLM extractor 实现 | `backend/app/services/llm_extractor.py` | 给定描述能返回合法 ParsedSymptoms；超时/JSON 解析失败抛 `LLMExtractionError` | TBD | 80 |
 
 **Phase 1 验收**：
 ```bash
