@@ -20,12 +20,22 @@ class Settings(BaseSettings):
     database_url: str = "postgresql+psycopg://sz:sz_dev_password@localhost:5432/sz_dev"
     database_pool_size: int = 10
 
-    # ── LLM (Anthropic) ──────────────────────────────────────
-    anthropic_api_key: str = ""
-    anthropic_model: str = "claude-sonnet-4-5-20250929"
+    # ── LLM 通用 ──────────────────────────────────────────────
+    # 'anthropic' | 'openai' —— 选哪种 SDK 协议；'openai' 兼容 DeepSeek/Qwen/OpenRouter/vLLM 等
+    llm_provider: str = "anthropic"
     llm_timeout_seconds: int = 15
     llm_max_tokens: int = 2000
     llm_temperature: float = 0.0
+
+    # ── LLM Anthropic 通道 ────────────────────────────────────
+    anthropic_api_key: str = ""
+    anthropic_model: str = "claude-sonnet-4-5-20250929"
+
+    # ── LLM OpenAI-compat 通道 ───────────────────────────────
+    # base_url 可指向任意 OpenAI 兼容端点（DeepSeek: https://api.deepseek.com/v1）
+    openai_api_key: str = ""
+    openai_base_url: str = "https://api.openai.com/v1"
+    openai_model: str = "gpt-4o-mini"
 
     # ── 应用 ──────────────────────────────────────────────────
     app_env: str = "dev"

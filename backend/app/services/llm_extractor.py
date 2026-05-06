@@ -1,20 +1,25 @@
 """感知层 —— LLM 抽取自由文本到结构化症状
 
 对应 DESIGN.md §5.① 感知环节
-- 模型: Claude Sonnet
+- 模型: Claude Sonnet / OpenAI 兼容（DeepSeek/Qwen/...）
 - 输出约束: JSON Schema (Pydantic ParsedSymptoms)
 - 词表 grounding: prompt 中嵌入 symptom_dictionary
 - 失败兜底: 由 Orchestrator 决定是否走 checklist
+
+Extractor 与具体 SDK 解耦：通过 LLMClient 协议调用底层。
+切换 provider 只需改 settings.llm_provider，不改本文件。
 """
 import json
 import re
 
-import anthropic
-from anthropic import Anthropic
 from pydantic import ValidationError
 
-from app.config import settings
 from app.schemas.assessment import ParsedSymptoms
+from app.services.llm_client import (
+    LLMClient,
+    LLMClientError,
+    build_default_llm_client,
+)
 
 
 class LLMExtractionError(Exception):
@@ -82,15 +87,25 @@ def _extract_json_blob(text: str) -> dict:
 
 
 class LLMExtractor:
-    def __init__(self) -> None:
-        self.client = Anthropic(api_key=settings.anthropic_api_key)
-        self.model = settings.anthropic_model
+    def __init__(self, client: LLMClient | None = None) -> None:
+        """构造 Extractor。
+
+        client=None 时按 settings.llm_provider 自动构造（生产用法）；
+        测试可注入 FakeLLMClient 绕过真实 SDK。
+        """
+        self.client = client if client is not None else build_default_llm_client()
+
+    @property
+    def model(self) -> str:
+        """暴露给审计：assessment.extraction_model_version 写这个值"""
+        return self.client.model
 
     def extract(self, raw_text: str, dictionary_snapshot: list[dict]) -> ParsedSymptoms:
         """从 raw_text 抽取症状，强制映射到 dictionary_snapshot 中的 symptom_id。
 
         失败路径全部抛 LLMExtractionError：
-        - API 超时 / 限流 / 5xx
+        - dictionary_snapshot 为空（上游 bug）
+        - LLMClient 抛 LLMClientError（API 超时 / 限流 / 5xx）
         - 响应非合法 JSON
         - JSON 不符合 ParsedSymptoms 结构
         - symptom_id 不在字典里
@@ -104,21 +119,11 @@ class LLMExtractor:
         )
 
         try:
-            response = self.client.messages.create(
-                model=self.model,
-                max_tokens=settings.llm_max_tokens,
-                temperature=settings.llm_temperature,
-                timeout=settings.llm_timeout_seconds,
-                system=system_prompt,
-                messages=[{"role": "user", "content": raw_text}],
-            )
-        except anthropic.APIError as e:
-            raise LLMExtractionError(f"Anthropic API call failed: {e}") from e
+            text = self.client.complete(system_prompt, raw_text)
+        except LLMClientError as e:
+            raise LLMExtractionError(str(e)) from e
 
-        if not response.content or not hasattr(response.content[0], "text"):
-            raise LLMExtractionError("LLM response has no text content")
-
-        data = _extract_json_blob(response.content[0].text)
+        data = _extract_json_blob(text)
 
         try:
             parsed = ParsedSymptoms.model_validate(data)

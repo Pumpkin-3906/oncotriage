@@ -1,43 +1,56 @@
-"""LLMExtractor 单测 —— 用 mock 桩掉 Anthropic API。
+"""LLMExtractor 单测 —— 用 FakeLLMClient 注入桩响应。
 
-覆盖 4 类失败路径 + 1 个 happy path：
+extractor 只关心 LLMClient 协议（complete(system, user) -> str），
+所以这一层测试不再 mock 任何 SDK 内部。
+provider 级别的接线测试见 test_llm_client.py。
+
+覆盖：
 1. happy: 高烧 + 化疗描述 → 合法 ParsedSymptoms
-2. fail: LLM 返回乱码（无 JSON）→ LLMExtractionError
-3. fail: LLM 返回字典外 symptom_id → LLMExtractionError
-4. fail: LLM JSON 不符合 schema → LLMExtractionError
-5. fail: Anthropic API 抛异常（超时/限流）→ LLMExtractionError
+2. markdown 围栏兼容
+3. LLM 返回乱码（无 JSON）→ LLMExtractionError
+4. LLM 返回字典外 symptom_id → LLMExtractionError
+5. JSON 不符合 ParsedSymptoms schema → LLMExtractionError
+6. LLMClient 抛 LLMClientError（API 异常）→ LLMExtractionError
+7. 空字典上游 bug → 立即报错不打 LLM
 """
 import json
-from unittest.mock import MagicMock, patch
 
-import anthropic
-import httpx
 import pytest
 
 from app.rules.seed_dictionary import SYMPTOMS
+from app.services.llm_client import LLMClientError
 from app.services.llm_extractor import LLMExtractionError, LLMExtractor
 
 
-def _mock_response(text: str) -> MagicMock:
-    """构造一个 messages.create() 的桩返回值。
+class FakeLLMClient:
+    """测试桩 —— 实现 LLMClient 协议，返回预置文本或抛指定异常。
 
-    Anthropic SDK 的真实响应是 anthropic.types.Message，含 content[0].text。
-    用 MagicMock 模拟即可，extractor 只读 content[0].text。
+    用法:
+        FakeLLMClient(response='{...}')          # complete() 返回该字符串
+        FakeLLMClient(error=LLMClientError(...))  # complete() 抛该异常
     """
-    block = MagicMock()
-    block.text = text
-    response = MagicMock()
-    response.content = [block]
-    return response
+
+    model = "fake-model-v1"
+
+    def __init__(self, response: str | None = None, error: Exception | None = None) -> None:
+        self.response = response
+        self.error = error
+        self.calls: list[tuple[str, str]] = []  # 记录 (system, user) 用于断言
+
+    def complete(self, system_prompt: str, user_message: str) -> str:
+        self.calls.append((system_prompt, user_message))
+        if self.error is not None:
+            raise self.error
+        assert self.response is not None, "FakeLLMClient: response or error must be set"
+        return self.response
 
 
-@pytest.fixture
-def extractor() -> LLMExtractor:
-    """构造 extractor —— anthropic_api_key 可为空，因为 client 不会真正调用"""
-    return LLMExtractor()
+def _make_extractor(response: str | None = None, error: Exception | None = None) -> tuple[LLMExtractor, FakeLLMClient]:
+    fake = FakeLLMClient(response=response, error=error)
+    return LLMExtractor(client=fake), fake
 
 
-def test_extract_happy_path_fever_with_chemo(extractor):
+def test_extract_happy_path_fever_with_chemo():
     """高烧 + 化疗描述 → 返回 ParsedSymptoms，含 fever 与 days_since_chemo"""
     fake_json = json.dumps({
         "symptoms": [
@@ -54,21 +67,19 @@ def test_extract_happy_path_fever_with_chemo(extractor):
         "context": {"days_since_chemo": 3},
         "confidence": 0.92,
     })
+    extractor, fake = _make_extractor(response=fake_json)
 
-    with patch.object(
-        extractor.client.messages, "create", return_value=_mock_response(fake_json)
-    ) as mock_create:
-        result = extractor.extract(
-            "昨天打完化疗第三天，今天下午开始发烧 38.5 度，浑身发冷",
-            SYMPTOMS,
-        )
+    result = extractor.extract(
+        "昨天打完化疗第三天，今天下午开始发烧 38.5 度，浑身发冷",
+        SYMPTOMS,
+    )
 
-    # 调用了一次，传入了 grounding 后的 system prompt
-    assert mock_create.call_count == 1
-    call_kwargs = mock_create.call_args.kwargs
-    assert "fever" in call_kwargs["system"]              # 字典 ID 嵌入了
-    assert "发烧" in call_kwargs["system"]                # 别名嵌入了
-    assert call_kwargs["temperature"] == 0.0              # 临床场景必须确定性
+    # client 被调用了一次，system prompt 含字典 grounding
+    assert len(fake.calls) == 1
+    system_prompt, user_message = fake.calls[0]
+    assert "fever" in system_prompt           # 字典 ID 嵌入了
+    assert "发烧" in system_prompt             # 别名嵌入了
+    assert "化疗第三天" in user_message         # 用户原文原样透传
 
     # 抽取结果正确
     assert len(result.symptoms) == 1
@@ -78,7 +89,7 @@ def test_extract_happy_path_fever_with_chemo(extractor):
     assert result.confidence is not None and result.confidence >= 0.8
 
 
-def test_extract_handles_markdown_code_fence(extractor):
+def test_extract_handles_markdown_code_fence():
     """LLM 偶尔会在 JSON 外裹 ```json ... ```，应该兼容"""
     fake_json = """```json
     {
@@ -87,45 +98,36 @@ def test_extract_handles_markdown_code_fence(extractor):
       "confidence": 0.7
     }
     ```"""
+    extractor, _ = _make_extractor(response=fake_json)
 
-    with patch.object(
-        extractor.client.messages, "create", return_value=_mock_response(fake_json)
-    ):
-        result = extractor.extract("有点想吐", SYMPTOMS)
+    result = extractor.extract("有点想吐", SYMPTOMS)
 
     assert result.symptoms[0].symptom_id == "nausea"
     assert result.symptoms[0].categorical_value == "mild"
 
 
-def test_extract_raises_on_garbage_response(extractor):
+def test_extract_raises_on_garbage_response():
     """LLM 返回 'I don't know...' 这种没有 JSON 的乱码 → LLMExtractionError"""
-    with patch.object(
-        extractor.client.messages,
-        "create",
-        return_value=_mock_response("I don't know what you're talking about."),
-    ):
-        with pytest.raises(LLMExtractionError, match="No JSON"):
-            extractor.extract("一些奇怪的输入", SYMPTOMS)
+    extractor, _ = _make_extractor(response="I don't know what you're talking about.")
+
+    with pytest.raises(LLMExtractionError, match="No JSON"):
+        extractor.extract("一些奇怪的输入", SYMPTOMS)
 
 
-def test_extract_raises_on_unknown_symptom_id(extractor):
+def test_extract_raises_on_unknown_symptom_id():
     """LLM 返回字典外的 symptom_id (如 'diabetes') → LLMExtractionError"""
     fake_json = json.dumps({
-        "symptoms": [
-            {"symptom_id": "diabetes", "categorical_value": "moderate"}
-        ],
+        "symptoms": [{"symptom_id": "diabetes", "categorical_value": "moderate"}],
         "context": {},
         "confidence": 0.8,
     })
+    extractor, _ = _make_extractor(response=fake_json)
 
-    with patch.object(
-        extractor.client.messages, "create", return_value=_mock_response(fake_json)
-    ):
-        with pytest.raises(LLMExtractionError, match="not in dictionary"):
-            extractor.extract("我有糖尿病", SYMPTOMS)
+    with pytest.raises(LLMExtractionError, match="not in dictionary"):
+        extractor.extract("我有糖尿病", SYMPTOMS)
 
 
-def test_extract_raises_on_schema_mismatch(extractor):
+def test_extract_raises_on_schema_mismatch():
     """JSON 合法但不符合 ParsedSymptoms schema → LLMExtractionError"""
     # confidence > 1.0 违反 Field(ge=0, le=1) 约束
     fake_json = json.dumps({
@@ -133,25 +135,32 @@ def test_extract_raises_on_schema_mismatch(extractor):
         "context": {},
         "confidence": 5.0,
     })
+    extractor, _ = _make_extractor(response=fake_json)
 
-    with patch.object(
-        extractor.client.messages, "create", return_value=_mock_response(fake_json)
-    ):
-        with pytest.raises(LLMExtractionError, match="ParsedSymptoms schema"):
-            extractor.extract("发烧 38 度", SYMPTOMS)
+    with pytest.raises(LLMExtractionError, match="ParsedSymptoms schema"):
+        extractor.extract("发烧 38 度", SYMPTOMS)
 
 
-def test_extract_raises_on_api_error(extractor):
-    """API 超时 / 限流 / 5xx 都被包装成 LLMExtractionError"""
-    fake_request = httpx.Request("POST", "https://api.anthropic.com/v1/messages")
-    api_error = anthropic.APIConnectionError(request=fake_request)
+def test_extract_translates_client_error():
+    """LLMClient 抛 LLMClientError（API 超时/限流/5xx）→ 包装成 LLMExtractionError"""
+    extractor, _ = _make_extractor(error=LLMClientError("Anthropic API call failed: timeout"))
 
-    with patch.object(extractor.client.messages, "create", side_effect=api_error):
-        with pytest.raises(LLMExtractionError, match="Anthropic API call failed"):
-            extractor.extract("发烧", SYMPTOMS)
+    with pytest.raises(LLMExtractionError, match="Anthropic API call failed"):
+        extractor.extract("发烧", SYMPTOMS)
 
 
-def test_extract_raises_on_empty_dictionary(extractor):
+def test_extract_raises_on_empty_dictionary():
     """空字典是上游 bug，应立即报错而不是去调 LLM"""
+    extractor, fake = _make_extractor(response="{}")
+
     with pytest.raises(LLMExtractionError, match="dictionary_snapshot is empty"):
         extractor.extract("发烧", [])
+
+    # 没调 LLM —— 早失败、早便宜
+    assert fake.calls == []
+
+
+def test_extractor_exposes_client_model():
+    """extractor.model 透传 client.model，供审计字段 extraction_model_version 使用"""
+    extractor, _ = _make_extractor(response="{}")
+    assert extractor.model == "fake-model-v1"
