@@ -195,6 +195,54 @@ def test_idempotent_post_returns_same_assessment_id(
     assert n == 1
 
 
+def test_post_with_parsed_symptoms_skips_llm(db, test_user, client_with_extractor):
+    """传 parsed_symptoms 时 Orchestrator 不调 LLM extract，直接进规则引擎。"""
+    client, install = client_with_extractor
+    extractor = _FakeExtractor(parsed=_high_fever_parsed())
+    install(extractor)
+
+    body = _payload(test_user, idem_key=f"confirmed-{uuid4()}")
+    body["parsed_symptoms"] = {
+        "symptoms": [{"symptom_id": "fever", "numeric_value": 38.5}],
+        "context": {"days_since_chemo": 3},
+        "confidence": 1.0,
+    }
+    resp = client.post("/api/v1/assessments", json=body)
+
+    assert resp.status_code == 201, resp.text
+    data = resp.json()
+    assert data["risk_level"] == "high"
+    assert data["audit"]["matched_rules"][0]["rule_id"].startswith("R001")
+    # LLM extract 不应被调用
+    assert extractor.calls == 0
+
+
+def test_post_extraction_source_user_confirmed(db, test_user, client_with_extractor):
+    """传 parsed_symptoms 时 symptom_observation.extraction_source='user_confirmed'。"""
+    client, install = client_with_extractor
+    install(_FakeExtractor(parsed=_high_fever_parsed()))
+
+    body = _payload(test_user, idem_key=f"confirmed-{uuid4()}")
+    body["parsed_symptoms"] = {
+        "symptoms": [{"symptom_id": "fever", "numeric_value": 38.5}],
+        "context": {"days_since_chemo": 3},
+        "confidence": 1.0,
+    }
+    resp = client.post("/api/v1/assessments", json=body)
+    assert resp.status_code == 201, resp.text
+
+    db.commit()
+    rows = db.execute(
+        sa.text(
+            "SELECT extraction_source FROM symptom_observation "
+            "WHERE user_id = :uid"
+        ),
+        {"uid": test_user},
+    ).mappings().all()
+    assert len(rows) >= 1
+    assert all(r["extraction_source"] == "user_confirmed" for r in rows)
+
+
 def test_llm_extraction_error_returns_422_with_checklist_url(
     db, test_user, client_with_extractor
 ):
