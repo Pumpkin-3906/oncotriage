@@ -5,6 +5,8 @@
  * （openapi-typescript / orval 等工具）
  */
 
+import type { ParsedSymptomsForm } from "../lib/symptom_dict";
+
 const BASE = "/api/v1";
 
 // ── MVP demo 身份（无登录）─────────────────────────────────
@@ -12,7 +14,7 @@ const BASE = "/api/v1";
 const DEMO_USER_KEY = "sz_demo_user_id";
 const SESSION_KEY = "sz_session_id";
 
-function getDemoUserId(): string {
+export function getDemoUserId(): string {
   let id = localStorage.getItem(DEMO_USER_KEY);
   if (!id) {
     // 演示用固定 UUID（与后端 DB 中已 INSERT 的 demo user 对应）
@@ -102,6 +104,60 @@ export async function listAssessments(
   if (!res.ok) throw new Error(`List failed: ${res.status}`);
   const data = await res.json();
   return data.items ?? data;
+}
+
+// ── Extract（无状态预览，POST /assessments/extract）─────────
+export interface MissingSlot {
+  symptom_id: string;
+  missing_fields: string[];
+}
+
+export interface CompletenessInfo {
+  is_complete: boolean;
+  missing_slots: MissingSlot[];
+}
+
+export interface ExtractResponse {
+  parsed_symptoms: ParsedSymptomsForm;
+  completeness: CompletenessInfo;
+  extraction_model_version: string;
+}
+
+/** 后端 422 时携带 reason + message */
+export class ExtractFailedError extends Error {
+  reason: string;
+  detail: string;
+  constructor(reason: string, message: string) {
+    super(message);
+    this.name = "ExtractFailedError";
+    this.reason = reason;
+    this.detail = message;
+  }
+}
+
+export interface ExtractInput {
+  input_source: "free_text" | "checklist";
+  raw_input_text?: string;
+  form_payload?: ParsedSymptomsForm;
+}
+
+export async function extractAssessment(
+  input: ExtractInput
+): Promise<ExtractResponse> {
+  const res = await fetch(`${BASE}/assessments/extract`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ user_id: getDemoUserId(), ...input }),
+  });
+  if (res.status === 422) {
+    const detail = await res.json().catch(() => ({}));
+    throw new ExtractFailedError(
+      detail.reason ?? "extraction_failed",
+      detail.message ?? "无法解析您的描述，建议改用清单模式"
+    );
+  }
+  if (!res.ok) throw new Error(`Extract failed: ${res.status}`);
+  return res.json();
 }
 
 export async function createContactRequest(payload: {
