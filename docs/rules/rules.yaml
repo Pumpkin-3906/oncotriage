@@ -1,0 +1,247 @@
+# ============================================================
+# 乳腺癌副作用智能体 — 规则引擎初版规则集
+# Version: 1.0.0
+# Source:  CTCAE v5.0 + NCCN Guidelines (Febrile Neutropenia 2024,
+#          Antiemesis 2024, Breast Cancer 2024)
+# Authored by: system_engineer (待临床委员会 review)
+# Last reviewed: TBD
+#
+# 注意:
+#  - 规则按 priority 升序匹配，首条命中即停（短路）
+#  - 每条规则的 source 字段要写到 evidence 表
+#  - 规则修改必须 bump version 并保留旧版（PR + reviewer 签字）
+# ============================================================
+
+engine_version: "1.0.0"
+metadata:
+  ctcae_version: "5.0"
+  guidelines:
+    - "NCCN Febrile Neutropenia v2024"
+    - "NCCN Breast Cancer v2024"
+    - "NCCN Antiemesis v2024"
+
+rules:
+  # ── 高风险（HIGH）─────────────────────────────────────────
+  - id: R001_febrile_neutropenia_suspected
+    priority: 1
+    source: "CTCAE v5.0 §General + NCCN FN 2024"
+    when:
+      all_of:
+        - symptom: fever
+          numeric_value: { gte: 38.3 }
+        - context:
+            days_since_chemo: { lte: 14 }
+    risk: high
+    advice_template: tpl_emergency_er
+    contact_team: true
+    urgency: now_24h
+    rationale: |
+      化疗后14天内出现≥38.3°C发热，需立即排除发热性中性粒细胞减少症（FN）。
+      这是肿瘤急症，未及时处理死亡率显著升高。
+
+  - id: R002_persistent_low_fever_post_chemo
+    priority: 2
+    source: "NCCN FN 2024"
+    when:
+      all_of:
+        - symptom: fever
+          numeric_value: { gte: 38.0, lt: 38.3 }
+          duration_hours: { gte: 1 }
+        - context:
+            days_since_chemo: { lte: 14 }
+    risk: high
+    advice_template: tpl_emergency_er
+    contact_team: true
+    urgency: now_24h
+    rationale: |
+      化疗后持续≥1小时的≥38.0°C低热同样符合NCCN发热性中性粒减少症诊断标准。
+
+  - id: R003_severe_dyspnea_or_chest_pain
+    priority: 1
+    source: "CTCAE v5.0 §Cardiac/Respiratory"
+    when:
+      any_of:
+        - symptom: shortness_of_breath
+          ctcae_grade: { gte: 3 }
+        - symptom: severe_chest_pain
+          categorical_value: { in: ["moderate", "severe"] }
+    risk: high
+    advice_template: tpl_emergency_er
+    contact_team: true
+    urgency: now_24h
+    rationale: |
+      严重呼吸困难或胸痛可能提示肺栓塞、心衰、心包填塞等致命并发症，
+      需立即就医排查。
+
+  - id: R004_severe_diarrhea_dehydration_risk
+    priority: 2
+    source: "CTCAE v5.0 §GI"
+    when:
+      all_of:
+        - symptom: severe_diarrhea
+          ctcae_grade: { gte: 3 }
+    risk: high
+    advice_template: tpl_emergency_er
+    contact_team: true
+    urgency: now_24h
+    rationale: |
+      CTCAE G3+ 腹泻（每日 ≥7 次稀便或需住院补液）伴脱水风险，
+      为化疗常见严重并发症。
+
+  # ── 中风险（MEDIUM）──────────────────────────────────────
+  - id: R010_grade2_hand_foot_syndrome
+    priority: 5
+    source: "CTCAE v5.0 §Skin"
+    when:
+      all_of:
+        - symptom: hand_foot_skin_reaction
+          ctcae_grade: { gte: 2 }
+    risk: medium
+    advice_template: tpl_contact_team_48h
+    contact_team: true
+    urgency: this_week
+    rationale: |
+      卡培他滨/紫杉类常见副作用。CTCAE G2+ (影响日常活动) 通常需要
+      调整剂量或暂停用药，建议 48h 内联系治疗团队。
+
+  - id: R011_persistent_vomiting
+    priority: 5
+    source: "NCCN Antiemesis 2024"
+    when:
+      all_of:
+        - symptom: vomiting
+          duration_hours: { gte: 24 }
+    risk: medium
+    advice_template: tpl_contact_team_48h
+    contact_team: true
+    urgency: this_week
+    rationale: |
+      持续呕吐 >24 小时，电解质紊乱风险升高，需调整止吐方案或
+      评估是否需要补液。
+
+  - id: R012_grade2_peripheral_neuropathy
+    priority: 6
+    source: "CTCAE v5.0 §Nervous system"
+    when:
+      all_of:
+        - symptom: peripheral_neuropathy
+          ctcae_grade: { gte: 2 }
+    risk: medium
+    advice_template: tpl_contact_team_48h
+    contact_team: true
+    urgency: this_week
+    rationale: |
+      紫杉类常见。CTCAE G2 已影响穿衣/系扣等精细动作，需评估是否
+      减量或更换方案，避免进展为不可逆。
+
+  # ── 低风险（LOW）─────────────────────────────────────────
+  - id: R020_mild_nausea
+    priority: 9
+    source: "CTCAE v5.0 §GI"
+    when:
+      all_of:
+        - symptom: nausea
+          ctcae_grade: { lte: 1 }
+    risk: low
+    advice_template: tpl_observe_and_log
+    contact_team: false
+    urgency: next_visit
+    rationale: |
+      CTCAE G1 恶心（不影响进食），建议记录频率与诱因，
+      下次复诊时反馈。
+
+  - id: R021_mild_fatigue
+    priority: 9
+    source: "CTCAE v5.0 §General"
+    when:
+      all_of:
+        - symptom: fatigue
+          ctcae_grade: { lte: 1 }
+    risk: low
+    advice_template: tpl_observe_and_log
+    contact_team: false
+    urgency: next_visit
+    rationale: |
+      CTCAE G1 疲劳（轻度，可正常活动）为治疗期常见反应，
+      建议保持记录、规律作息。
+
+  - id: R022_mild_hot_flashes
+    priority: 9
+    source: "Breast Cancer Endocrine Therapy Side Effects"
+    when:
+      all_of:
+        - symptom: hot_flashes
+          categorical_value: { eq: "mild" }
+    risk: low
+    advice_template: tpl_observe_and_log
+    contact_team: false
+    urgency: next_visit
+    rationale: |
+      内分泌治疗（他莫昔芬/AI 类）常见副作用，轻度潮热可记录频率，
+      下次复诊讨论。
+
+  # ── Advanced：时序规则（仅 FEATURE_TIMESERIES=true 时启用）──
+  - id: R030_worsening_fatigue_trend
+    priority: 4
+    requires_feature: timeseries
+    source: "Custom (clinical pattern)"
+    when:
+      all_of:
+        - trend:
+            symptom: fatigue
+            window_days: 7
+            trend_direction: increasing
+            current_grade: { gte: 2 }
+    risk: medium
+    advice_template: tpl_contact_team_48h
+    contact_team: true
+    urgency: this_week
+    rationale: |
+      过去 7 天疲劳呈持续加重趋势且当前 ≥G2，可能提示治疗耐受性下降
+      或并发症（贫血、甲状腺功能异常等），建议联系团队评估。
+
+  # ── 兜底（DEFAULT）───────────────────────────────────────
+  - id: R999_default_unmatched
+    priority: 99
+    source: "System default"
+    when:
+      always: true
+    risk: medium                            # 兜底偏保守
+    advice_template: tpl_contact_team_when_convenient
+    contact_team: true
+    urgency: this_week
+    rationale: |
+      未匹配到具体规则。出于安全考虑，建议联系治疗团队由人工评估。
+
+
+# ── 建议模板 ────────────────────────────────────────────────
+advice_templates:
+  tpl_emergency_er:
+    version: "1.0.0"
+    text: |
+      您的症状可能提示需要紧急处理的情况。建议：
+      1. 立即前往最近的急诊科就诊；
+      2. 24 小时内联系您的治疗团队；
+      3. 携带本次评估结果（编号 {{assessment_id}}）。
+      若出现意识模糊、严重呼吸困难、晕厥，请立即拨打 120。
+
+  tpl_contact_team_48h:
+    version: "1.0.0"
+    text: |
+      您的症状需要团队关注。建议：
+      1. 48 小时内联系您的主治团队；
+      2. 期间记录症状变化（频率、严重度、影响）；
+      3. 若症状加重，立即前往医院。
+
+  tpl_observe_and_log:
+    version: "1.0.0"
+    text: |
+      您当前的症状属于常见、轻度反应。建议：
+      1. 每天记录症状变化；
+      2. 若严重度加重，重新评估或联系团队；
+      3. 下次复诊时主动提及。
+
+  tpl_contact_team_when_convenient:
+    version: "1.0.0"
+    text: |
+      建议在方便时联系您的治疗团队，由临床人员对您的情况做进一步评估。

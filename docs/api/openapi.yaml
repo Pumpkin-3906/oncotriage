@@ -1,0 +1,223 @@
+# ============================================================
+# 乳腺癌副作用智能体 — REST API 契约
+# Version: 1.0.0
+# Last Updated: 2026-05-06
+# ============================================================
+openapi: 3.0.3
+info:
+  title: Breast Cancer Side-Effect Triage Agent API
+  version: "1.0.0"
+  description: |
+    最小可运行原型的 4 个核心接口：
+      1. POST /assessments              提交评估
+      2. GET  /assessments/{id}          获取结果
+      3. GET  /users/{user_id}/assessments  获取历史
+      4. POST /contact-requests          创建协同请求
+
+servers:
+  - url: https://api.example.com/v1
+
+paths:
+  /assessments:
+    post:
+      summary: 提交副作用评估
+      operationId: submitAssessment
+      description: |
+        - 流程: LLM 抽取 → 失败时降级 checklist → 规则引擎 → 写库 → 返回
+        - 触发埋点: assessment_submitted
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AssessmentRequest'
+      responses:
+        '201':
+          description: 评估完成
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AssessmentResult'
+        '422':
+          description: LLM 抽取失败且无 checklist 兜底输入
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChecklistFallbackPrompt'
+
+  /assessments/{id}:
+    get:
+      summary: 获取单次评估结果
+      operationId: getAssessment
+      description: 触发埋点 result_viewed
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: 评估详情
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AssessmentResult'
+
+  /users/{user_id}/assessments:
+    get:
+      summary: 获取用户历史评估
+      operationId: listAssessments
+      parameters:
+        - name: user_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+        - name: limit
+          in: query
+          schema: { type: integer, default: 20, maximum: 100 }
+        - name: cursor
+          in: query
+          schema: { type: string }
+      responses:
+        '200':
+          description: 历史列表（按时间倒序）
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/AssessmentSummary'
+                  next_cursor:
+                    type: string
+                    nullable: true
+
+  /contact-requests:
+    post:
+      summary: 创建联系团队请求
+      operationId: createContactRequest
+      description: 触发埋点 contact_team_clicked
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [assessment_id, urgency]
+              properties:
+                assessment_id: { type: string, format: uuid }
+                urgency:
+                  type: string
+                  enum: [now_24h, this_week, next_visit]
+                note_from_user: { type: string, maxLength: 1000 }
+      responses:
+        '201':
+          description: 已创建协同请求
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  contact_request_id: { type: string, format: uuid }
+                  status: { type: string, example: pending }
+                  expected_response_time_hours: { type: integer, example: 24 }
+
+
+components:
+  schemas:
+    AssessmentRequest:
+      type: object
+      required: [user_id, session_id, input_source]
+      properties:
+        user_id: { type: string, format: uuid }
+        session_id: { type: string }
+        input_source:
+          type: string
+          enum: [free_text, checklist_fallback]
+        raw_input_text:
+          type: string
+          maxLength: 4000
+          description: free_text 时必填
+        checklist_payload:
+          type: object
+          description: checklist_fallback 时必填，结构同 ParsedSymptoms
+        feature_flags:
+          type: object
+          properties:
+            timeseries: { type: boolean, default: false }
+
+    AssessmentResult:
+      type: object
+      properties:
+        assessment_id: { type: string, format: uuid }
+        created_at:    { type: string, format: date-time }
+        risk_level:
+          type: string
+          enum: [high, medium, low]
+        advice:
+          type: object
+          properties:
+            text: { type: string }
+            contact_team: { type: boolean }
+            urgency:
+              type: string
+              enum: [now_24h, this_week, next_visit]
+        # 审计三件套（业务硬要求）
+        audit:
+          type: object
+          properties:
+            matched_rules:
+              type: array
+              items:
+                type: object
+                properties:
+                  rule_id:        { type: string }
+                  rule_version:   { type: string }
+                  source_doc:     { type: string }
+                  matched_fields: { type: object }
+                  rationale_text: { type: string }
+            generated_at:        { type: string, format: date-time }
+            rule_engine_version: { type: string }
+            extraction_model_version: { type: string }
+        parsed_symptoms:
+          $ref: '#/components/schemas/ParsedSymptoms'
+
+    ParsedSymptoms:
+      type: object
+      properties:
+        symptoms:
+          type: array
+          items:
+            type: object
+            properties:
+              symptom_id:        { type: string }
+              numeric_value:     { type: number }
+              numeric_unit:      { type: string }
+              categorical_value: { type: string }
+              ctcae_grade:       { type: integer, minimum: 1, maximum: 5 }
+              duration_hours:    { type: number }
+              interferes_with_adl: { type: boolean }
+        context:
+          type: object
+          properties:
+            days_since_chemo: { type: integer }
+
+    AssessmentSummary:
+      type: object
+      properties:
+        assessment_id: { type: string, format: uuid }
+        created_at:    { type: string, format: date-time }
+        risk_level:    { type: string }
+        primary_symptom: { type: string }
+
+    ChecklistFallbackPrompt:
+      type: object
+      description: LLM 抽取失败，前端应展示 checklist 让用户重新提交
+      properties:
+        reason:
+          type: string
+          enum: [llm_unavailable, low_confidence, ambiguous_input]
+        checklist_url: { type: string }
+        message: { type: string }
