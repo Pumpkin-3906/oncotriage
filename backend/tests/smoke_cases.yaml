@@ -1,0 +1,210 @@
+# OncoTriage —— 真实患者语料冒烟测试集 (M_smoke)
+#
+# 这些 case 模拟"化疗中乳腺癌患者"在真实场景下会怎么描述自己的症状。
+# 它们是 LLM 抽取层的回归基准（regression baseline）。
+#
+# 字段约定见 docs/tasks/M_smoke_corpus.md。
+# 编辑原则：
+#   - 用 must_include 而不是 must_only_include —— 容忍 LLM 多抽近邻症状
+#   - confidence 用区间断言（min/max）—— 容忍 LLM 浮动 ±0.1
+#   - M3 (RuleEngine) 还没完成，所以本文件 *不写* risk_level / primary_rule_starts_with / is_complete 断言
+#   - notes 标记 marginal 的 case，提醒 reviewer 这条偶尔会失败
+
+# ════════════════════════════════════════════════════════════════════
+# A.1 高风险急症（清晰）
+# ════════════════════════════════════════════════════════════════════
+
+- id: SMOKE_A1_001_clear_fever_post_chemo
+  category: clear_high_risk
+  input: "昨天打完化疗第三天，今天下午开始发烧38.5度，浑身发冷"
+  expected:
+    extracted_symptoms_must_include: [fever]
+    extracted_context_keys: [days_since_chemo]
+    confidence_min: 0.7
+  notes: "北极星 case：化疗后中性粒细胞缺乏期发热，LLM 应稳定抽出 fever + days_since_chemo=3"
+
+- id: SMOKE_A1_002_dyspnea_with_chest_pain
+  category: clear_high_risk
+  input: "我突然喘不上气，前胸还有压榨感，特别难受"
+  expected:
+    extracted_symptoms_must_include: [shortness_of_breath, severe_chest_pain]
+    confidence_min: 0.6
+  notes: "双高危症状同时出现，LLM 应同时抽出 dyspnea + chest pain"
+
+- id: SMOKE_A1_003_severe_watery_diarrhea
+  category: clear_high_risk
+  input: "今天拉了七八次水样便，一直跑厕所，整个人都虚脱了"
+  expected:
+    extracted_symptoms_must_include: [severe_diarrhea]
+    confidence_min: 0.7
+  notes: "频率明显（7-8 次水样便）→ 高风险腹泻"
+
+# ════════════════════════════════════════════════════════════════════
+# A.2 化疗常见副作用（清晰）
+# ════════════════════════════════════════════════════════════════════
+
+- id: SMOKE_A2_001_hand_foot_moderate
+  category: chemo_side_effect
+  input: "手掌脱皮疼，影响拿东西，端碗都端不稳"
+  expected:
+    extracted_symptoms_must_include: [hand_foot_skin_reaction]
+    confidence_min: 0.6
+  notes: "中度手足综合征（影响 ADL）"
+
+- id: SMOKE_A2_002_persistent_vomiting
+  category: chemo_side_effect
+  input: "昨天晚上开始一直吐到现在，吃什么吐什么"
+  expected:
+    extracted_symptoms_must_include: [vomiting]
+    confidence_min: 0.7
+  notes: "持续呕吐 >24h，LLM 可能也会抽 nausea，允许"
+
+- id: SMOKE_A2_003_peripheral_neuropathy
+  category: chemo_side_effect
+  input: "手指麻得没法系扣子，最近几天越来越严重"
+  expected:
+    extracted_symptoms_must_include: [peripheral_neuropathy]
+    confidence_min: 0.6
+  notes: "外周神经病变中度（影响 ADL）"
+
+# ════════════════════════════════════════════════════════════════════
+# A.3 低风险（清晰）
+# ════════════════════════════════════════════════════════════════════
+
+- id: SMOKE_A3_001_mild_nausea
+  category: clear_low_risk
+  input: "有点想吐但能吃饭"
+  expected:
+    extracted_symptoms_must_include: [nausea]
+    confidence_min: 0.5
+  notes: "轻度恶心，categorical_value 应为 mild"
+
+- id: SMOKE_A3_002_mild_fatigue
+  category: clear_low_risk
+  input: "就是有点累，活动还行，就是没以前精神"
+  expected:
+    extracted_symptoms_must_include: [fatigue]
+    confidence_min: 0.5
+  notes: "轻度疲劳，不影响 ADL"
+
+# ════════════════════════════════════════════════════════════════════
+# A.4 信息缺失（CompletenessChecker 应触发）
+# ════════════════════════════════════════════════════════════════════
+
+- id: SMOKE_A4_001_fever_no_temp
+  category: missing_info
+  input: "我发烧了"
+  expected:
+    extracted_symptoms_must_include: [fever]
+    confidence_max: 0.95
+  notes: "fever 缺 numeric_value —— M3 完成后应触发 CompletenessChecker"
+
+- id: SMOKE_A4_002_nausea_no_grade
+  category: missing_info
+  input: "今天有点恶心"
+  expected:
+    extracted_symptoms_must_include: [nausea]
+    confidence_max: 0.95
+  notes: "nausea 缺 grade/categorical_value —— M3 完成后应触发追问"
+
+- id: SMOKE_A4_003_chest_discomfort_vague
+  category: missing_info
+  input: "胸口不舒服"
+  expected:
+    extracted_symptoms_must_include: [severe_chest_pain]
+    confidence_max: 0.9
+  notes: "marginal: LLM 可能因 '不舒服' 太弱而不抽 severe_chest_pain。expect ~80% pass"
+
+# ════════════════════════════════════════════════════════════════════
+# A.5 模糊/口语
+# ════════════════════════════════════════════════════════════════════
+
+- id: SMOKE_A5_001_vague_unwell
+  category: vague_input
+  input: "整个人不太对劲"
+  expected:
+    confidence_max: 0.6
+  notes: "marginal: symptoms 应为空或低置信度。LLM 偶尔会瞎猜 fatigue。expect ~70% pass"
+
+- id: SMOKE_A5_002_indescribable
+  category: vague_input
+  input: "感觉怪怪的，说不出哪里"
+  expected:
+    confidence_max: 0.6
+  notes: "marginal: 应触发 R999 兜底。symptoms 期望为空。expect ~70% pass"
+
+# ════════════════════════════════════════════════════════════════════
+# A.6 方言/俗称
+# ════════════════════════════════════════════════════════════════════
+
+- id: SMOKE_A6_001_oral_ulcer_dialect
+  category: dialect_slang
+  input: "上火了，嘴里起泡，吃饭疼"
+  expected:
+    extracted_symptoms_must_include: [mucositis]
+    confidence_min: 0.5
+  notes: "口腔黏膜炎的方言说法 '上火 + 嘴里起泡'，'吃饭疼' 是字典 alias"
+
+- id: SMOKE_A6_002_face_hot_fever
+  category: dialect_slang
+  input: "脸有点烫，额头摸着也热乎"
+  expected:
+    extracted_symptoms_must_include: [fever]
+    confidence_max: 0.9
+  notes: "marginal: 非标准发烧描述（无温度）。LLM 应识别但置信度不应过高"
+
+# ════════════════════════════════════════════════════════════════════
+# A.7 多症状（多规则同时命中，验证 Plan D）
+# ════════════════════════════════════════════════════════════════════
+
+- id: SMOKE_A7_001_fever_with_vomiting
+  category: multi_symptom
+  input: "化疗后第3天发烧38.5度，还一直恶心吐"
+  expected:
+    extracted_symptoms_must_include: [fever, vomiting]
+    extracted_context_keys: [days_since_chemo]
+    confidence_min: 0.7
+  notes: "多症状：fever (high) + vomiting (med)，M3 完成后 primary 应是 R001"
+
+- id: SMOKE_A7_002_neuropathy_with_rash
+  category: multi_symptom
+  input: "手脚都麻了，皮肤还起红疹"
+  expected:
+    extracted_symptoms_must_include: [peripheral_neuropathy, rash]
+    confidence_min: 0.6
+  notes: "外周神经病变 + 皮疹同时命中"
+
+# ════════════════════════════════════════════════════════════════════
+# A.8 时间/上下文表达
+# ════════════════════════════════════════════════════════════════════
+
+- id: SMOKE_A8_001_relative_time_diarrhea
+  category: temporal_context
+  input: "前天打完红药水昨天就开始拉，今天还在拉"
+  expected:
+    extracted_symptoms_must_include: [severe_diarrhea]
+    extracted_context_keys: [days_since_chemo]
+    confidence_min: 0.6
+  notes: "marginal: '红药水' 是阿霉素俗称。LLM 应推断 days_since_chemo=2。expect ~80% pass"
+
+# ════════════════════════════════════════════════════════════════════
+# A.9 超界（不在 MVP 范围）
+# ════════════════════════════════════════════════════════════════════
+
+- id: SMOKE_A9_001_insomnia_out_of_scope
+  category: out_of_scope
+  input: "最近老是失眠睡不着，翻来覆去到天亮"
+  expected:
+    extracted_symptoms_must_not_include: [fatigue, fever, nausea, vomiting]
+  notes: "失眠/焦虑不在 MVP 字典。symptoms 期望为空。LLM 可能错抽 fatigue —— 如果反复失败需改进 prompt"
+
+# ════════════════════════════════════════════════════════════════════
+# A.10 LLM 易错
+# ════════════════════════════════════════════════════════════════════
+
+- id: SMOKE_A10_001_neck_lump_not_dict
+  category: llm_pitfall
+  input: "脖子上长了个肿块，硬硬的不疼"
+  expected:
+    extracted_symptoms_must_not_include: [rash, hand_foot_skin_reaction, mucositis]
+  notes: "marginal: 不是字典里任何条目（语义近 lymphadenopathy，不在 MVP）。LLM 可能错抽 rash 或 hand_foot —— 必须明确不接受。expect ~75% pass"
