@@ -2,11 +2,19 @@
 
 对应 DESIGN.md §9 可观测性
 MVP 阶段写到 stdout + event_log 表；生产环境改 Kafka。
+
+写入策略：
+- 同步 INSERT + commit，独立于业务事务
+- 写失败仅 stderr 日志，不影响主流程（埋点不能拖死业务）
+- VALID_EVENTS 是契约白名单，未知事件直接抛 ValueError 防止字段漂移
 """
 import json
-from datetime import datetime
+import sys
 from typing import Any
 from uuid import UUID
+
+import sqlalchemy as sa
+from sqlalchemy.orm import Session
 
 from app.config import settings
 
@@ -21,30 +29,46 @@ VALID_EVENTS = {
 
 
 class EventEmitter:
+    def __init__(self, db: Session):
+        self.db = db
+
     def emit(
         self,
         event_type: str,
         session_id: str,
-        user_id: UUID | None = None,
-        assessment_id: UUID | None = None,
+        user_id: UUID | str | None = None,
+        assessment_id: UUID | str | None = None,
         payload: dict[str, Any] | None = None,
     ) -> None:
-        """
-        TODO: 实现要点
-        1. 校验 event_type ∈ VALID_EVENTS
-        2. 写入 event_log 表（事务外，失败不影响主流程）
-        3. 同时写到 EVENT_SINK (stdout / kafka) 用于实时仪表盘
-        """
         if event_type not in VALID_EVENTS:
             raise ValueError(f"Invalid event_type: {event_type}")
-        # ... 待实现
-        record = {
-            "event_type": event_type,
-            "session_id": session_id,
-            "user_id": str(user_id) if user_id else None,
-            "assessment_id": str(assessment_id) if assessment_id else None,
-            "occurred_at": datetime.utcnow().isoformat(),
-            "payload": payload or {},
-        }
+
+        # 1. 写 DB —— 失败仅 stderr，不抛
+        try:
+            self.db.execute(
+                sa.text(
+                    """
+                    INSERT INTO event_log
+                        (event_type, user_id, session_id, assessment_id, payload, occurred_at)
+                    VALUES (:t, :u, :s, :a, CAST(:p AS JSONB), NOW())
+                    """
+                ),
+                {
+                    "t": event_type,
+                    "u": str(user_id) if user_id is not None else None,
+                    "s": session_id,
+                    "a": str(assessment_id) if assessment_id is not None else None,
+                    "p": json.dumps(payload or {}),
+                },
+            )
+            self.db.commit()
+        except Exception as e:
+            print(f"[event_emitter] DB write failed: {e}", file=sys.stderr)
+            try:
+                self.db.rollback()
+            except Exception:
+                pass
+
+        # 2. 实时 sink（仪表盘 / 调试）
         if settings.event_sink == "stdout":
-            print(f"[EVENT] {json.dumps(record)}")
+            print(f"[EVENT] {event_type} session={session_id}")
