@@ -44,3 +44,6 @@ select = ["E", "F", "I", "B", "UP", "N"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+markers = [
+    "smoke: real-API smoke tests against patient-language corpus (cost ~$0.10/run, slow)",
+]
