@@ -8,14 +8,21 @@
 """
 from app.models.user import User
 from app.models.assessment import Assessment
+from app.models.symptom_observation import SymptomObservation
+from app.models.advice import Advice
+from app.models.evidence import Evidence
 
 # TODO: 按需补全其他模型
-# from app.models.symptom import SymptomDictionary, SymptomObservation
-# from app.models.advice import Advice
-# from app.models.evidence import Evidence
+# from app.models.symptom_dictionary import SymptomDictionary
 # from app.models.rule_source import RuleSource
 # from app.models.consent import Consent
 # from app.models.event_log import EventLog
 # from app.models.contact_request import ContactRequest
 
-__all__ = ["User", "Assessment"]
+__all__ = [
+    "User",
+    "Assessment",
+    "SymptomObservation",
+    "Advice",
+    "Evidence",
+]
