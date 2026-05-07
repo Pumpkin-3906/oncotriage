@@ -34,3 +34,6 @@ logs/
 *.sqlite
 *.db
 postgres-data/
+
+# Claude Code agent state (worktrees 元数据等)
+.claude/
